@@ -1,0 +1,31 @@
+### Python ###
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+### Logs ###
+*.log
+*.err.log
+
+### Environment / secrets ###
+.env
+.env.*
+!.env.example
+
+### Node / frontend build ###
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/coverage/
+frontend/*.tsbuildinfo
+
+### OS ###
+.DS_Store
+Thumbs.db
+
+### IDE ###
+.vscode/
+.idea/
