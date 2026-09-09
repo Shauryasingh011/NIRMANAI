@@ -1,0 +1,6 @@
+# Vercel Python (FastAPI) deployment configuration.
+# Tells the Vercel Python runtime where the ASGI app lives:
+#   api.py  ->  variable "app"
+# See https://vercel.com/docs/frameworks/backend/fastapi#exporting-the-fastapi-application
+[tool.vercel]
+entrypoint = "api:app"
