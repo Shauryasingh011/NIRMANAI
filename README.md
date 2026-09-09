@@ -49,7 +49,7 @@ React frontend (Vite + Tailwind + Recharts)  — Dashboard, Projects, Intelligen
 | Backend / API | Python, FastAPI, Uvicorn, SQLite |
 | ML | XGBoost, scikit-learn, SHAP |
 | Data | pandas, numpy, matplotlib |
-| Frontend | React 18, TypeScript, Vite, Tailwind CSS, Recharts, lucide-react |
+| Frontend | React 18, TypeScript, Vite, Tailwind CSS, Recharts, lucide-react, Leaflet (react-leaflet 4) |
 
 ---
 
@@ -97,7 +97,8 @@ npm run dev              # http://localhost:5173 (proxies /api -> :8000)
 |---|---|---|
 | GET | `/` | Static dashboard (`static/index.html`) |
 | GET | `/api/health` | DB + model status |
-| GET | `/api/projects` | Project cards (filter by `sector`, `state`, `risk_level`, `limit`) |
+| GET | `/api/projects` | Project cards (filter by `sector`, `state`, `risk_level`, `limit`) — original shape unchanged |
+| GET | `/api/projects?map=true` | `{ mode, projects[] }` map feed: default project fields + `lat`/`lng` (deterministic state centroids) |
 | GET | `/api/projects/{id}` | Full project detail + risk + SHAP drivers |
 | GET | `/api/projects/{id}/timeline` | Monthly snapshot timeline |
 | POST | `/api/projects` | Register a new project (triggers ML scoring) |
@@ -112,6 +113,30 @@ npm run dev              # http://localhost:5173 (proxies /api -> :8000)
 | POST | `/api/llm/explain` | Natural-language risk brief (`project_id` or raw `data`) |
 
 ---
+
+## Interactive project map
+
+The dashboard's "Live infrastructure project map" card and the dedicated
+`/map` page render a **react-leaflet** map (Leaflet 1.9 / react-leaflet 4 —
+the combination needed for this React 18 app):
+
+- Markers are pinned to deterministic **functional state centroids**
+  (`STATE_CENTROIDS` in `mock_data.py`); cluster colour follows the project's
+  live status (`On Track` → green, `Watch` → amber, `At Risk` → red), and
+  marker size scales with the composite XGBoost risk score.
+- The map reads `GET /api/projects?map=true`. The **default** `/api/projects`
+  payload is untouched, so existing consumers keep working unchanged.
+- If the backend is unreachable, `src/services/api.ts` builds a deterministic
+  fallback from the same centroid table (`src/data/stateCentroids.ts`) plus a
+  project-id-seeded jitter — the map stays stable across reloads.
+
+**Why functional centroids and not real coordinates?** The DB stores no
+georeferencing, so exact sites are neither recorded nor derivable. The map is a
+*verification and monitoring surface* — it shows **where risk sits** at the
+portfolio level, not an authoritative/encrypted GIS layer. Coordinates are
+display-only derivations of state identity, so there is nothing secret to
+encrypt; real per-project location data, when it exists, lives in the project
+record itself.
 
 ## Testing
 ```bash

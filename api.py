@@ -12,17 +12,26 @@ Endpoints:
   GET /api/trends/states
   GET /api/trends/national
   GET /api/warnings
+  GET /api/projects?map=true    -> leaflet payload (additive, default unchanged)
+  POST /api/verify-image        -> photo verification (EGPS/time/duplicate heuristics)
+  GET /api/verification-records -> audit trail for verification checks
+  GET /uploads/{filename}       -> serve uploaded photos back to the UI
 """
+import json
+import shutil
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-import scoring
 import llm
+import mock_data
+import scoring
+import verification_pipeline as verification
 
 app = FastAPI(title="Infrastructure Oversight Co-Pilot API")
 app.add_middleware(
@@ -30,6 +39,87 @@ app.add_middleware(
 
 DB = "project_monitoring.db"
 MONTH_ORDER = ["Feb", "March", "April", "May", "June", "July"]
+
+# ---------------------------------------------------------------------------
+# Map & photo-verification bit (additive-only; ML pipeline stays untouched).
+# ---------------------------------------------------------------------------
+UPLOAD_DIR = Path("uploads")
+UPLOAD_DIR.mkdir(exist_ok=True)  # safe when the server starts from any cwd
+
+
+def _ensure_verification_schema():
+    """Idempotent guard; the table is also declared in schema.sql."""
+    conn = sqlite3.connect(DB)
+    try:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS verification_records ("
+            "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "  file_name TEXT NOT NULL,"
+            "  upload_path TEXT NOT NULL,"
+            "  project_id TEXT NOT NULL,"
+            "  submitted_at TEXT NOT NULL,"
+            "  status TEXT NOT NULL,"
+            "  result_json TEXT NOT NULL"
+            ")"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _status_from_risk(risk_level: str) -> str:
+    """Map a model risk level back to the dashboard status vocabulary."""
+    level = str(risk_level or "").strip()
+    if level == "Low":
+        return "On Track"
+    if level == "Medium":
+        return "Watch"
+    return "At Risk"  # High / Critical
+
+
+def _map_projects(limit: int = 200):
+    """Enriched /api/projects payload for the Leaflet map.
+
+    Returns a dict with ``mode`` ("db" | "demo") plus the project list. DB
+    rows carry no coordinates, so each project is placed deterministically
+    from its state centroid via ``mock_data.coordinates_for``. Unresolved
+    states drop the point (never crash the request).
+    """
+    query = (
+        "SELECT p.project_id, p.sector, p.state, p.sanctioned_cost, "
+        "s.physical_progress_pct, s.cumulative_expenditure, "
+        "m.cop_prob, m.top_prob, m.final_risk_score, m.risk_level "
+        "FROM projects p "
+        "LEFT JOIN project_snapshots s ON p.project_id = s.project_id AND s.month = 'July' "
+        "LEFT JOIN model_risk_scores m ON p.project_id = m.project_id AND m.month = 'July' "
+        "ORDER BY m.final_risk_score DESC LIMIT ?"
+    )
+    df = q(query, params=[limit])
+    projects = []
+    for r in df.to_dict("records"):
+        if r.get("project_id") is None:
+            continue
+        coords = mock_data.coordinates_for(str(r["project_id"]), str(r.get("state", "")))
+        if coords is None:
+            continue
+        risk = float(r.get("final_risk_score") or 50)
+        level = str(r.get("risk_level") or ("Medium" if risk >= 40 else "Low"))
+        projects.append({
+            "id": str(r["project_id"]),
+            "name": f"{r.get('state')} {r.get('sector')} Project ({r['project_id']})",
+            "project_id": str(r["project_id"]),
+            "sector": str(r.get("sector") or "Infrastructure"),
+            "state": str(r.get("state") or "India"),
+            "lat": coords[0],
+            "lng": coords[1],
+            "cost_cr": round(float(r.get("sanctioned_cost") or 0), 2),
+            "physical_progress_pct": round(float(r.get("physical_progress_pct") or 0), 1),
+            "expenditure_cr": round(float(r.get("cumulative_expenditure") or 0), 2),
+            "status": _status_from_risk(level),
+            "risk_score": round(risk, 1),
+            "risk_level": level,
+        })
+    return {"mode": "db", "projects": projects}
 
 
 def q(sql, params=None):
@@ -184,7 +274,13 @@ def health():
 
 
 @app.get("/api/projects")
-def projects(sector: Optional[str] = None, state: Optional[str] = None, risk_level: Optional[str] = None, limit: int = 500):
+def projects(sector: Optional[str] = None, state: Optional[str] = None,
+             risk_level: Optional[str] = None, limit: int = 500,
+             map: Optional[bool] = None):
+    # Enriched leaflet payload used by the interactive map; the default
+    # JSON-card response below is byte-for-byte identical to the original.
+    if map:
+        return _map_projects(limit=max(1, min(limit, 2000)))
     query = """
     SELECT 
         p.project_id, p.sector, p.state, p.sanctioned_cost, p.sanctioned_date, p.original_end_date, p.duration_months,
@@ -535,6 +631,146 @@ def warnings(limit: int = 50):
         "FROM early_warnings ORDER BY CASE month WHEN 'Feb' THEN 1 WHEN 'March' THEN 2 "
         "WHEN 'April' THEN 3 WHEN 'May' THEN 4 WHEN 'June' THEN 5 WHEN 'July' THEN 6 END "
         "DESC, signal_value DESC LIMIT ?", params=[limit]).to_dict("records")
+
+
+@app.post("/api/verify-image")
+async def verify_image_upload(
+    file: UploadFile = File(...),
+    project_id: str = Form(...),
+    project_lat: Optional[float] = Form(None),
+    project_lng: Optional[float] = Form(None),
+    captured_at: Optional[str] = Form(None),
+    max_distance_km: float = Form(10.0),
+    max_age_days: float = Form(30.0),
+):
+    """Accept an on-site photo and run the local heuristic verification.
+
+    Additive feature - the ML risk models and /api/projects default response
+    are untouched. If the imaging libraries are missing this endpoint still
+    answers with ``status: "unverifiable"`` instead of crashing.
+    """
+    _ensure_verification_schema()
+
+    # Resolve expected site coordinates unless the client supplied them.
+    coords = None
+    if project_lat is not None and project_lng is not None:
+        coords = (project_lat, project_lng)
+    else:
+        demo = mock_data.demo_by_id(project_id)
+        if demo:
+            coords = (demo["lat"], demo["lng"])
+        else:
+            row = q("SELECT state FROM projects WHERE project_id = ?",
+                    params=[project_id])
+            if not row.empty:
+                coords = mock_data.coordinates_for(project_id, str(row.iloc[0]["state"]))
+    if coords is None:
+        raise HTTPException(422, "could not resolve coordinates for this project")
+
+    ext = Path(file.filename or "upload.jpg").suffix.lower() or ".jpg"
+    if ext not in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}:
+        raise HTTPException(415, "unsupported image type - use JPEG/PNG/WebP")
+
+    safe_name = (
+        f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')}_"
+        f"{project_id.replace('/', '_')[:40]}{ext}"
+    )
+    target = UPLOAD_DIR / safe_name
+    with target.open("wb") as fh:
+        shutil.copyfileobj(file.file, fh)
+
+    # Feed previously accepted hashes so re-uploads are caught.
+    known = []
+    hist = q(
+        "SELECT result_json FROM verification_records "
+        "WHERE status = 'accepted' AND project_id = ?",
+        params=[project_id],
+    )
+    for rec in hist.to_dict("records"):
+        try:
+            phash = json.loads(rec["result_json"]).get("checks", {}).get("perceptual_hash")
+        except Exception:
+            phash = None
+        if phash:
+            known.append(phash)
+
+    result = verification.verify_image(
+        target,
+        project_lat=coords[0],
+        project_lng=coords[1],
+        max_distance_km=max_distance_km,
+        max_age_days=max_age_days,
+        duplicate_hashes=known,
+        captured_at=captured_at or None,
+    )
+    result["file_url"] = f"/uploads/{safe_name}"
+    result["project_id"] = project_id
+    result["project_coords"] = {"lat": coords[0], "lng": coords[1]}
+
+    conn = sqlite3.connect(DB)
+    try:
+        conn.execute(
+            "INSERT INTO verification_records "
+            "(file_name, upload_path, project_id, submitted_at, status, result_json) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (file.filename or safe_name, safe_name, project_id,
+             result["submitted_at"], result["status"], json.dumps(result)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return result
+
+
+@app.get("/uploads/{filename}")
+def serve_upload(filename: str):
+    """Serve uploaded photos back to the Leaflet side-panel / popups."""
+    safe = Path(filename).name  # strip any path separators
+    fp = UPLOAD_DIR / safe
+    if not fp.exists():
+        raise HTTPException(404, "file not found")
+    return FileResponse(fp)
+
+
+@app.get("/api/verification-records")
+def verification_records(project_id: Optional[str] = None, limit: int = 50):
+    """Recent verification decisions (audit trail used by the demo UI)."""
+    conn = sqlite3.connect(DB)
+    try:
+        if project_id:
+            rows = conn.execute(
+                "SELECT id, file_name, project_id, submitted_at, status, result_json "
+                "FROM verification_records WHERE project_id = ? ORDER BY id DESC LIMIT ?",
+                (project_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, file_name, project_id, submitted_at, status, result_json "
+                "FROM verification_records ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+    finally:
+        conn.close()
+    out = []
+    for row in rows:
+        try:
+            res = json.loads(row[5])
+        except Exception:
+            continue
+        out.append({
+            "id": row[0],
+            "file_name": row[1],
+            "project_id": row[2],
+            "submitted_at": row[3],
+            "status": row[4],
+            "file_url": res.get("file_url", f"/uploads/{row[1]}"),
+            "gps": res.get("gps"),
+            "distance_km": res.get("distance_km"),
+            "timestamp_gap_days": res.get("timestamp_gap_days"),
+            "ela_score": res.get("ela_score"),
+            "reasons": res.get("reasons", []),
+        })
+    return out
 
 
 class LLMExplainRequest(BaseModel):

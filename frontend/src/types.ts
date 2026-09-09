@@ -42,6 +42,25 @@ export interface Project {
   risk_level?: string
 }
 
+/** A project as returned by the backend's geospatial feed (`/api/projects?map=true`). */
+export interface MapProject {
+  id: string
+  project_id?: string
+  name: string
+  sector: string
+  state: string
+  /** Functional state-centroid coordinates (display-only, for pinning). */
+  lat: number
+  lng: number
+  cost_cr?: number
+  physical_progress_pct?: number
+  expenditure_cr?: number
+  status: ProjectStatus | string
+  risk_score?: number
+  risk_level?: 'Low' | 'Medium' | 'High' | 'Critical' | string
+  agency?: string
+}
+
 export interface ProjectTimelineSnapshot {
   month: string
   physical_progress_pct: number

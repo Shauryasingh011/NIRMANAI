@@ -4,11 +4,11 @@ import { AreaChart, Area, ResponsiveContainer, LineChart, Line } from 'recharts'
 import StatCard from '../components/StatCard'
 import RadialGauge from '../components/RadialGauge'
 import ProjectCard from '../components/ProjectCard'
-import { IndiaMapSvg } from '../components/IndiaMapSvg'
-import React, { useState, useEffect, useRef } from 'react'
-import { projects, sectorPerformance, riskForecast, healthBreakdown, states } from '../data/mockData'
-import { getPortfolioSummary } from '../services/api'
-import type { PortfolioSummary, Project } from '../types'
+import ProjectMapSafe from '../components/ProjectMapSafe'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
+import { projects, sectorPerformance, healthBreakdown } from '../data/mockData'
+import { getMapProjects, getPortfolioSummary } from '../services/api'
+import type { MapProject, PortfolioSummary, Project } from '../types'
 
 import slide1 from '../assests/slide1.png'
 import slide2 from '../assests/slide2.png'
@@ -259,25 +259,35 @@ export default function Dashboard() {
       .catch((err) => console.warn('Could not load portfolio summary', err))
   }, [])
 
+  useEffect(() => {
+    let alive = true
+    getMapProjects()
+      .then((res) => {
+        if (alive) setMapProjects(res.projects)
+      })
+      .catch((err) => console.warn('Could not load map projects', err))
+    return () => {
+      alive = false
+    }
+  }, [])
+
   const [currentSlide, setCurrentSlide] = useState(0)
-  const [selectedStateId, setSelectedStateId] = useState('mh')
-  const [hoveredStateId, setHoveredStateId] = useState<string | null>(null)
   const [highValueStart, setHighValueStart] = useState(0)
   const [summaryMode, setSummaryMode] = useState<'ministry' | 'sector'>('ministry')
   const [selectedSummaryIndex, setSelectedSummaryIndex] = useState(0)
+  const [mapProjects, setMapProjects] = useState<MapProject[]>([])
 
-  const stateCodeByName: Record<string, string> = {
-    Maharashtra: 'mh',
-    'Uttar Pradesh': 'up',
-    Gujarat: 'gj',
-    Kerala: 'kl',
-  }
-  const stateDataMap = Object.fromEntries(
-    states.map((state) => [
-      stateCodeByName[state.name],
-      { name: state.name, totalProjects: state.projects, health: state.health },
-    ]),
-  )
+  const mapRiskStats = useMemo(() => {
+    const total = mapProjects.length
+    const atRisk = mapProjects.filter((p) => p.status === 'At Risk').length
+    const watch = mapProjects.filter((p) => p.status === 'Watch').length
+    const onTrack = mapProjects.filter((p) => p.status === 'On Track').length
+    const avgRisk = total
+      ? Math.round(mapProjects.reduce((sum, p) => sum + (p.risk_score ?? 0), 0) / total)
+      : 0
+    return { total, atRisk, watch, onTrack, avgRisk }
+  }, [mapProjects])
+
   const summaryList = summaryData[summaryMode]
   const selectedSummary = summaryList[selectedSummaryIndex] ?? summaryList[0]
   const selectorItems = summaryList.slice(0, 5)
@@ -627,69 +637,65 @@ export default function Dashboard() {
         </div>
       </section>
 
-      {/* Map + risk forecast */}
+      {/* Live project map (Leaflet) */}
       <section className="grid grid-cols-1 lg:grid-cols-[1.1fr,1fr] gap-6">
         <div className="rounded-xl border border-slate-200 dark:border-ink-800 bg-white dark:bg-ink-900 p-5 shadow-card transition-colors duration-200">
           <div className="flex items-center justify-between mb-4">
             <p className="text-xs font-semibold tracking-wide text-slate-400">WHERE THE RISK IS</p>
-            <Link to="/state-analysis" className="text-xs text-cyan-400 cursor-pointer hover:underline">State analysis ›</Link>
+            <Link to="/map" className="text-xs text-cyan-400 cursor-pointer hover:underline">Open full map ›</Link>
           </div>
-          <h3 className="font-display font-semibold text-slate-900 dark:text-white mb-4">India infrastructure map</h3>
-          <div className="rounded-lg bg-ink-950 border border-white/5 min-h-[380px] flex items-center justify-center relative overflow-hidden">
-            <span className="absolute top-3 left-3 flex items-center gap-1.5 text-[10px] font-medium text-emerald-400">
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> LIVE GEOSPATIAL LAYER
-            </span>
-            <IndiaMapSvg
-              selectedStateId={selectedStateId}
-              hoveredStateId={hoveredStateId}
-              onSelectState={setSelectedStateId}
-              onHoverState={setHoveredStateId}
-              stateDataMap={stateDataMap}
-            />
-          </div>
+          <h3 className="font-display font-semibold text-slate-900 dark:text-white mb-4">Live infrastructure project map</h3>
+          <ProjectMapSafe
+            projects={mapProjects}
+            height={380}
+            dark={document.documentElement.classList.contains('dark')}
+          />
           <div className="flex items-center justify-between mt-3 text-[11px] text-slate-500">
-            <span>● Healthy &nbsp; ● Watch &nbsp; ● Risk</span>
-            <span>1,981 projects</span>
+            <span className="flex items-center gap-3">
+              <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-emerald-500" /> Healthy</span>
+              <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-amber-500" /> Watch</span>
+              <span className="flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-red-500" /> Risk</span>
+            </span>
+            <span>{mapRiskStats.total} projects plotted</span>
           </div>
         </div>
 
-        <div className="rounded-xl border border-slate-200 dark:border-ink-800 bg-white dark:bg-ink-900 p-5 shadow-card transition-colors duration-200">
-  <div className="flex items-center justify-between mb-1">
-    <p className="text-xs font-semibold tracking-wide text-cyan-600 dark:text-cyan-400">RISK SURFACE INDEX</p>
-    <span className="text-[11px] text-slate-400 dark:text-slate-500">12 month horizon</span>
-  </div>
-  
-  {/* Changed text-ink-950 to text-slate-900 dark:text-white */}
-  <h3 className="font-display font-semibold text-slate-900 dark:text-white mb-4">Project risk forecast</h3>
-  
-  <div className="h-40">
-    <ResponsiveContainer width="100%" height="100%">
-      <AreaChart data={riskForecast} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
-        <defs>
-          <linearGradient id="riskFill" x1="0" y1="0" x2="0" y2="1">
-            {/* Kept your signal colors but softened opacity down slightly for dark mode contrast balance */}
-            <stop offset="0%" stopColor="#F0654F" stopOpacity={0.35} />
-            <stop offset="100%" stopColor="#F0654F" stopOpacity={0} />
-          </linearGradient>
-        </defs>
-        <Area type="monotone" dataKey="value" stroke="#E85D4E" strokeWidth={2} fill="url(#riskFill)" />
-      </AreaChart>
-    </ResponsiveContainer>
-  </div>
-  
-  {/* Changed month label text states so timeline markers scale text colors cleanly */}
-  <div className="flex items-center justify-between text-[11px] text-slate-400 dark:text-slate-500 mt-1">
-    {riskForecast.map((r) => (
-      <span key={r.month}>{r.month}</span>
-    ))}
-  </div>
-  
-  <p className="text-sm text-slate-500 dark:text-slate-400 mt-3">
-    Model-estimated risk probability across the monitored portfolio. Prediction confidence{' '}
-    <span className="font-semibold text-slate-900 dark:text-white">87%</span>
-  </p>
-</div>
-
+        <div className="rounded-xl border border-slate-200 dark:border-ink-800 bg-white dark:bg-ink-900 p-5 shadow-card transition-colors duration-200 flex flex-col">
+          <p className="text-xs font-semibold tracking-wide text-cyan-600 dark:text-cyan-400">RISK SURFACE INDEX</p>
+          <h3 className="font-display font-semibold text-slate-900 dark:text-white mt-1 mb-4">Live portfolio snapshot</h3>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-lg bg-slate-50 dark:bg-ink-950 border border-slate-100 dark:border-ink-800 p-4">
+              <p className="text-[11px] font-medium text-slate-400 mb-2">AT RISK</p>
+              <p className="font-display text-2xl font-black text-red-500 leading-none">{mapRiskStats.atRisk}</p>
+              <p className="text-[11px] text-slate-400 mt-2">{mapRiskStats.total ? Math.round((mapRiskStats.atRisk / mapRiskStats.total) * 100) : 0}% of plotted</p>
+            </div>
+            <div className="rounded-lg bg-slate-50 dark:bg-ink-950 border border-slate-100 dark:border-ink-800 p-4">
+              <p className="text-[11px] font-medium text-slate-400 mb-2">WATCH</p>
+              <p className="font-display text-2xl font-black text-amber-500 leading-none">{mapRiskStats.watch}</p>
+            </div>
+            <div className="rounded-lg bg-slate-50 dark:bg-ink-950 border border-slate-100 dark:border-ink-800 p-4">
+              <p className="text-[11px] font-medium text-slate-400 mb-2">ON TRACK</p>
+              <p className="font-display text-2xl font-black text-emerald-500 leading-none">{mapRiskStats.onTrack}</p>
+            </div>
+            <div className="rounded-lg bg-slate-50 dark:bg-ink-950 border border-slate-100 dark:border-ink-800 p-4">
+              <p className="text-[11px] font-medium text-slate-400 mb-2">AVG RISK SCORE</p>
+              <p className="font-display text-2xl font-black text-slate-900 dark:text-white leading-none">
+                {mapRiskStats.avgRisk}<span className="text-sm font-bold text-slate-400">/100</span>
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 rounded-lg bg-slate-50 dark:bg-ink-950 p-4 flex-1">
+            <p className="text-sm font-semibold text-ink-950 dark:text-white mb-1.5">Why this matters</p>
+            <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed">
+              Markers are pinned to deterministic state-centroid coordinates. Risk signals come straight from the
+              same XGBoost composite used in the hotspot list — points are display data aligned to the model,
+              not a geospatial survey.
+            </p>
+          </div>
+          <Link to="/map" className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-brand-orange hover:underline self-start">
+            Explore the national project map <ArrowRight size={14} />
+          </Link>
+        </div>
       </section>
 
       <section className="rounded-3xl border border-slate-200 dark:border-ink-800 bg-white dark:bg-ink-900 shadow-card p-5 sm:p-6 transition-colors duration-200">

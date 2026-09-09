@@ -1,15 +1,17 @@
 import type {
+  EarlyWarning,
+  MapProject,
+  NationalTrendItem,
+  PortfolioSummary,
   Project,
   ProjectDetailData,
   ProjectTimelineSnapshot,
-  PortfolioSummary,
-  NationalTrendItem,
   SectorBaselineItem,
   StateBaselineItem,
   StateDetailData,
-  EarlyWarning,
 } from '../types'
 import { projects as mockProjects, states as mockStates } from '../data/mockData'
+import { stateCentroids } from '../data/stateCentroids'
 
 const BASE_URL = '' // Proxy forwards /api requests to http://127.0.0.1:8000
 
@@ -59,6 +61,104 @@ export async function getProjects(params?: {
   } catch (err) {
     console.warn('Backend unavailable, using fallback projects', err)
     return mockProjects
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Geospatial feed (/api/projects?map=true)
+ * ------------------------------------------------------------------ */
+
+/** `GET /api/projects?map=true` → `{ mode, projects[] }` with lat/lng per project. */
+export interface MapProjectsResponse {
+  mode: 'live' | 'fallback'
+  projects: MapProject[]
+}
+
+/** Deterministic string hash → stable pseudo-random offsets (no Math.random). */
+function seedFrom(str: string): number {
+  let h = 2166136261
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i)
+    h = Math.imul(h, 16777619)
+  }
+  return h >>> 0
+}
+
+/** Pseudo-random value in [-1, 1] that is stable for a given seed string. */
+function jitter(seed: string, scale = 0.5): number {
+  const x = Math.sin(seedFrom(seed)) * 43758.5453
+  return ((x - Math.floor(x)) * 2 - 1) * scale
+}
+
+/** Resolve a state display name (comma/ampersand tolerant) to a centroid. */
+function centroidFor(state: string): [number, number] | null {
+  const first = state.split('/')[0].split(',')[0].trim()
+  const key = first.toLowerCase()
+  const aliases: Record<string, string> = {
+    'andaman & nicobar islands': 'Andaman & Nicobar',
+    'jammu & kashmir': 'Jammu & Kashmir',
+    'nct of delhi': 'Delhi',
+    delhi: 'Delhi',
+    'new delhi': 'Delhi',
+    orissa: 'Odisha',
+    pondicherry: 'Puducherry',
+    telangana: 'Telangana',
+    'uttar pradesh': 'Uttar Pradesh',
+    'andhra pradesh': 'Andhra Pradesh',
+    'arunachal pradesh': 'Arunachal Pradesh',
+    'himachal pradesh': 'Himachal Pradesh',
+    'madya pradesh': 'Madhya Pradesh',
+    'tamil nadu': 'Tamil Nadu',
+    'west bengal': 'West Bengal',
+  }
+  const resolved = aliases[key] ?? first
+  return stateCentroids[resolved] ?? null
+}
+
+/**
+ * Build a deterministic demo set of map projects from the bundled mock data.
+ * Only used when the backend is unreachable — state centroids mirror the
+ * backend exactly, and the pseudo-random jitter is seeded per project id so
+ * the map is stable across reloads.
+ */
+export function buildFallbackMapProjects(): MapProject[] {
+  const result: MapProject[] = []
+  for (const p of mockProjects) {
+    const c = centroidFor(p.state)
+    if (!c) continue
+    const lat = Math.max(6, Math.min(37.5, c[0] + jitter(`${p.id}-lat`, 0.45)))
+    const lng = Math.max(68, Math.min(97.5, c[1] + jitter(`${p.id}-lng`, 0.6)))
+    const status = p.status
+    result.push({
+      id: p.id,
+      project_id: p.id,
+      name: p.name,
+      sector: p.sector,
+      state: p.state,
+      lat: Number(lat.toFixed(6)),
+      lng: Number(lng.toFixed(6)),
+      physical_progress_pct: p.physicalProgress,
+      status,
+      risk_score: Math.round(100 - p.health),
+      risk_level: status === 'At Risk' ? 'High' : status === 'Watch' ? 'Medium' : 'Low',
+    })
+  }
+  return result
+}
+
+/** Fetch geospatial project markers. Falls back to the deterministic demo set. */
+export async function getMapProjects(): Promise<MapProjectsResponse> {
+  try {
+    const res = await fetch(`${BASE_URL}/api/projects?map=true`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const data = await res.json()
+    if (data && Array.isArray(data.projects) && data.projects.length > 0) {
+      return { mode: 'live', projects: data.projects }
+    }
+    return { mode: 'fallback', projects: buildFallbackMapProjects() }
+  } catch (err) {
+    console.warn('Backend unavailable, using fallback map projects', err)
+    return { mode: 'fallback', projects: buildFallbackMapProjects() }
   }
 }
 

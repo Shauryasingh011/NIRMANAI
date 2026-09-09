@@ -5,6 +5,7 @@ import Dashboard from './pages/Dashboard'
 import Projects from './pages/Projects'
 import ProjectDetail from './pages/ProjectDetail'
 import Intelligence from './pages/Intelligence'
+import MapView from './pages/MapView'
 import StateAnalysis from './pages/StateAnalysis'
 import Reports from './pages/Reports'
 
@@ -37,6 +38,7 @@ export default function App() {
         <Route path="/projects/:id" element={<ProjectDetail />} />
         <Route path="/intelligence" element={<Intelligence />} />
         <Route path="/state-analysis" element={<StateAnalysis />} />
+        <Route path="/map" element={<MapView />} />
         <Route path="/reports" element={<Reports />} />
       </Route>
     </Routes>

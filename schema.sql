@@ -130,3 +130,16 @@ CREATE TABLE IF NOT EXISTS model_risk_scores (
     final_risk_score NUMERIC,
     risk_level TEXT
 );
+
+-- OPTIONAL: audit trail for the photo-verification (on-site evidence) demo.
+-- The table is created here AND guarded idempotently in api.py so the
+-- pipeline never requires a re-run of this schema file.
+CREATE TABLE IF NOT EXISTS verification_records (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_name TEXT NOT NULL,
+    upload_path TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    submitted_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    result_json TEXT NOT NULL
+);

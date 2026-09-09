@@ -7,6 +7,7 @@ import paimanaLogo from '../assests/paimana-logo.png'
 const navItems = [
   { to: '/', label: 'Dashboard' },
   { to: '/projects', label: 'Projects' },
+  { to: '/map', label: 'Project Map' },
   { to: '/intelligence', label: 'Intelligence' },
   { to: '/state-analysis', label: 'State Analysis' },
   { to: '/reports', label: 'Reports' },
@@ -44,9 +45,9 @@ export default function Layout({ darkMode, setDarkMode }: LayoutProps) {
         {/* Navigation Header Panel - Made shape, height, and content flexible on small screens */}
         <header className="rounded-2xl sm:rounded-full shadow-[0_4px_20px_rgba(15,20,32,0.06)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.4)] border border-white/50 dark:border-ink-800 bg-gradient-to-r from-amber-500/10 via-white/95 to-emerald-500/10 dark:from-amber-600/10 dark:via-ink-900/95 dark:to-emerald-600/10 backdrop-blur px-4 sm:px-8 h-16 flex items-center justify-between transition-all duration-300">
           
-          <div className="flex items-center gap-4 md:gap-10">
+          <div className="flex items-center gap-3 md:gap-6 min-w-0">
             {/* Logo Wrapper Container - Scaled down image footprint to prevent cutting off on mobile */}
-            <a href="/" className="flex flex-col items-center justify-center select-none group min-w-[130px] sm:min-w-[200px]">
+            <a href="/" className="flex flex-col items-center justify-center select-none group min-w-[100px] sm:min-w-[150px] lg:min-w-[200px]">
               <img 
                 src={paimanaLogo} 
                 alt="Paimana Logo" 
@@ -58,14 +59,14 @@ export default function Layout({ darkMode, setDarkMode }: LayoutProps) {
             </a>
             
             {/* Desktop Navigation Menu (hidden on mobile devices) */}
-            <nav className="hidden md:flex items-center gap-6">
+            <nav className="hidden md:flex items-center gap-4 lg:gap-6 overflow-x-auto whitespace-nowrap">
               {navItems.map((item) => (
                 <NavLink
                   key={item.to}
                   to={item.to}
                   end={item.to === '/'}
                   className={({ isActive }) =>
-                    `text-sm font-semibold transition-all px-3 py-1.5 rounded-full ${
+                    `text-sm font-semibold transition-all px-2.5 py-1.5 rounded-full ${
                       isActive 
                         ? 'text-brand-orange bg-amber-500/10 dark:bg-amber-500/20 shadow-sm' 
                         : 'text-slate-500 dark:text-slate-400 hover:text-ink-950 dark:hover:text-white hover:bg-slate-100/50 dark:hover:bg-ink-800/50'
@@ -141,7 +142,7 @@ export default function Layout({ darkMode, setDarkMode }: LayoutProps) {
         MOBILE HAMBURGER DRAWER SYSTEM:
         Sticky floating strip visible only on phone layout views to jump pages without changing code blocks!
       */}
-      <div className="md:hidden fixed bottom-4 inset-x-4 z-40 bg-white/90 dark:bg-ink-900/90 backdrop-blur border border-slate-200 dark:border-ink-800 shadow-2xl rounded-xl p-2 flex justify-around items-center transition-all duration-300">
+      <div className="md:hidden fixed bottom-4 inset-x-4 z-40 bg-white/90 dark:bg-ink-900/90 backdrop-blur border border-slate-200 dark:border-ink-800 shadow-2xl rounded-xl p-2 flex items-center justify-around gap-1 overflow-x-auto transition-all duration-300">
         {navItems.map((item) => (
           <NavLink
             key={item.to}
