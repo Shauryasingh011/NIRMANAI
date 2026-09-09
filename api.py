@@ -18,6 +18,7 @@ Endpoints:
   GET /uploads/{filename}       -> serve uploaded photos back to the UI
 """
 import json
+import os
 import shutil
 import sqlite3
 from datetime import datetime, timezone
@@ -27,6 +28,7 @@ import pandas as pd
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 import llm
 import mock_data
@@ -246,10 +248,11 @@ class RegisterProjectRequest(BaseModel):
     original_end_date: Optional[str] = "2027-01-01"
 
 
-@app.get("/")
+@app.get("/", include_in_schema=False)
 def index():
-    resp = FileResponse(Path("static/index.html"))
-    # Legacy page reads live DOM + API each load; never let browsers serve a stale copy.
+    dist = Path("frontend/dist/index.html")
+    resp = FileResponse(dist if dist.is_file() else Path("static/index.html"))
+    # Dashboard/SPA reads live DOM + API each load; never let browsers serve a stale copy.
     resp.headers["Cache-Control"] = "no-store"
     return resp
 
@@ -820,6 +823,44 @@ def llm_explain(req: LLMExplainRequest):
     }
 
 
+# ---------------------------------------------------------------------------
+# React frontend (built dashboard + /map SPA). Additive — every /api and
+# /uploads route above keeps priority. Falls back to the legacy static
+# dashboard when frontend/dist is absent (e.g. API-only deployments).
+# ---------------------------------------------------------------------------
+FRONTEND_DIST = Path("frontend/dist")
+
+
+def _frontend_index() -> Path:
+    candidate = FRONTEND_DIST / "index.html"
+    return candidate if candidate.is_file() else Path("static/index.html")
+
+
+def _spa_response(target: Path) -> FileResponse:
+    resp = FileResponse(target)
+    # SPA reads live DOM + API each load; never serve stale copies.
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+if (FRONTEND_DIST / "assets").is_dir():
+    app.mount(
+        "/assets",
+        StaticFiles(directory=str(FRONTEND_DIST / "assets")),
+        name="frontend-assets",
+    )
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa(full_path: str):
+    if FRONTEND_DIST.is_dir():
+        candidate = FRONTEND_DIST / full_path
+        if full_path and candidate.is_file():
+            return _spa_response(candidate)
+        return _spa_response(_frontend_index())
+    return _spa_response(_frontend_index())
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
